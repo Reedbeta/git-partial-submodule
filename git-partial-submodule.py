@@ -36,18 +36,18 @@ if args.command is None:
 
 # Helper functions
 
-def Git(*gitArgs, **kwargs):
+def Git(*gitArgs):
     if args.verbose:
         print('git ' + ' '.join(gitArgs))
     if args.dryRun:
         return
-    cp = subprocess.run(('git',) + gitArgs, **kwargs)
+    cp = subprocess.run(('git',) + gitArgs)
     if cp.returncode != 0:
         sys.exit("Git command failed: git %s" % ' '.join(gitArgs))
     return cp
 
 def CheckGitVersion(minVersion):
-    cp = subprocess.run(('git', '--version'), capture_output=True)
+    cp = subprocess.run(('git', '--version'), stdout=subprocess.PIPE)
     if cp.returncode != 0: sys.exit(1)
     if m := re.match(br'git version (\d+)\.(\d+)\.(\d+)', cp.stdout):
         gitVersion = tuple(int(m.group(i)) for i in range(1, 4))
@@ -55,12 +55,12 @@ def CheckGitVersion(minVersion):
         sys.exit("Git version is too old. You need at least %d.%d.%d, and you have %d.%d.%d." % (minVersion + gitVersion))
 
 def GetWorktreeRoot():
-    cp = subprocess.run(('git', 'rev-parse', '--show-toplevel'), capture_output=True)
+    cp = subprocess.run(('git', 'rev-parse', '--show-toplevel'), stdout=subprocess.PIPE)
     if cp.returncode != 0: sys.exit(1)
     return os.path.abspath(codecs.decode(cp.stdout, sys.stdout.encoding).strip())
 
 def GetRepositoryRoot():
-    cp = subprocess.run(('git', 'rev-parse', '--git-dir'), capture_output=True)
+    cp = subprocess.run(('git', 'rev-parse', '--git-dir'), stdout=subprocess.PIPE)
     if cp.returncode != 0: sys.exit(1)
     return os.path.abspath(codecs.decode(cp.stdout, sys.stdout.encoding).strip())
 
