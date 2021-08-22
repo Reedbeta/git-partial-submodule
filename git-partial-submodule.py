@@ -1,7 +1,12 @@
 #!/usr/bin/python3
 #coding: utf-8
 
-import argparse, codecs, configparser, os, re, subprocess, sys
+# Check Python version
+import sys
+if sys.hexversion < 0x03080000:
+	sys.exit('You need at least Python 3.8. (You have %s.)' % sys.version.split()[0])
+
+import argparse, codecs, configparser, os, re, subprocess
 
 # Parse arguments
 
@@ -64,6 +69,33 @@ def GetRepositoryRoot():
     if cp.returncode != 0: sys.exit(1)
     return os.path.abspath(codecs.decode(cp.stdout, sys.stdout.encoding).strip())
 
+def ReadGitmodules(worktreeRoot):
+    # Read the .gitmodules file
+    gitmodulesConfig = configparser.ConfigParser(
+        allow_no_value = True,
+        default_section = None,
+        inline_comment_prefixes = ('#', ';'),
+        interpolation = None)
+    if not gitmodulesConfig.read(os.path.join(worktreeRoot, '.gitmodules')):
+        sys.exit("Couldn't parse .gitmodules!")
+    if args.verbose:
+        print("parsed %d submodules from .gitmodules" % len(gitmodulesConfig.sections()))
+
+    # Build mapping tables
+    gitmodules = argparse.Namespace(byName={}, byPath={})
+    for section in gitmodulesConfig.sections():
+        if m := re.match(r'submodule "(.*)"', section):
+            name = m.group(1)
+            contents = dict(gitmodulesConfig[section])
+            contents['name'] = name
+            gitmodules.byName[name] = contents
+            if 'path' in contents:
+                gitmodules.byPath[contents['path']] = contents
+            if 'sparse-checkout' in contents:
+                # Split and convert to list
+                contents['sparse-checkout'] = re.split(r'[\s,]+', contents['sparse-checkout'])
+    return gitmodules
+
 # Version 2.27.0 is needed for --filter and --sparse options on git clone
 CheckGitVersion((2, 27, 0))
 
@@ -85,18 +117,8 @@ if args.command == 'add':
     sys.exit("Not yet implemented")
 
 elif args.command == 'clone':
-    # Read .gitmodules
-    gitmodules = configparser.ConfigParser(
-        allow_no_value = True,
-        default_section = None,
-        inline_comment_prefixes = ('#', ';'),
-        interpolation = None)
-    if not gitmodules.read(os.path.join(worktreeRoot, '.gitmodules')):
-        sys.exit("Couldn't parse .gitmodules!")
-    if args.verbose:
-        print("parsed %d submodules from .gitmodules" % len(gitmodules.sections()))
-
-    # TODO: build mapping tables from gitmodules
+    # Load .gitmodules information
+    gitmodules = ReadGitmodules(worktreeRoot)
 
     # Init the submodules - this ensures git config "submodule.foo" options are set up
     Git('submodule', 'init', *args.path)
