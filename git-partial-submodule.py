@@ -12,7 +12,7 @@ import argparse, codecs, configparser, os, re, subprocess
 
 parser = argparse.ArgumentParser(description="Add or clone partial git submodules.")
 parser.add_argument('-n', dest='dryRun', default=False, action='store_true', help='Dry run (display git commands without executing them)')
-parser.add_argument('-v', dest='verbose', default=False, action='store_true', help='Verbose (display git commands being run)')
+parser.add_argument('-v', dest='verbose', default=False, action='store_true', help='Verbose (display git commands being run, and other info)')
 subparsers = parser.add_subparsers(dest='command', metavar='command')
 
 addCmdParser = subparsers.add_parser(
@@ -30,10 +30,9 @@ cloneCmdParser = subparsers.add_parser(
     allow_abbrev = False,
     help = "Clone partial submodules from .gitmodules.",
     epilog = "All other options are passed through to the underlying git command.")
-cloneCmdParser.add_argument('path', nargs='*', default=[], help='Submodule directory to clone (if unspecified, all submodules)')
+cloneCmdParser.add_argument('paths', nargs='*', default=[], help='Submodule directory(ies) to clone (if unspecified, all submodules)')
 
-args, extraArgs = parser.parse_known_args()
-#print("Args:\n", args, "\nextraArgs:\n", extraArgs)
+args, gitPassthroughArgs = parser.parse_known_args()
 
 if args.command is None:
     parser.print_help()
@@ -42,7 +41,7 @@ if args.command is None:
 # Helper functions
 
 def Git(*gitArgs):
-    if args.verbose:
+    if args.verbose or args.dryRun:
         print('git ' + ' '.join(gitArgs))
     if args.dryRun:
         return
@@ -51,23 +50,24 @@ def Git(*gitArgs):
         sys.exit("Git command failed: git %s" % ' '.join(gitArgs))
     return cp
 
+def ReadGitOutput(*gitArgs):
+    # Not respecting verbose or dryRun here since this is just used for querying things, not modifying anything
+    cp = subprocess.run(('git',) + gitArgs, stdout=subprocess.PIPE)
+    if cp.returncode != 0:
+        sys.exit(1)     # Git will have already printed an error to stderr
+    return codecs.decode(cp.stdout, sys.stdout.encoding)
+
 def CheckGitVersion(minVersion):
-    cp = subprocess.run(('git', '--version'), stdout=subprocess.PIPE)
-    if cp.returncode != 0: sys.exit(1)
-    if m := re.match(br'git version (\d+)\.(\d+)\.(\d+)', cp.stdout):
+    if m := re.match(r'git version (\d+)\.(\d+)\.(\d+)', ReadGitOutput('--version')):
         gitVersion = tuple(int(m.group(i)) for i in range(1, 4))
     if gitVersion < minVersion:
         sys.exit("Git version is too old. You need at least %d.%d.%d, and you have %d.%d.%d." % (minVersion + gitVersion))
 
 def GetWorktreeRoot():
-    cp = subprocess.run(('git', 'rev-parse', '--show-toplevel'), stdout=subprocess.PIPE)
-    if cp.returncode != 0: sys.exit(1)
-    return os.path.abspath(codecs.decode(cp.stdout, sys.stdout.encoding).strip())
+    return os.path.abspath(ReadGitOutput('rev-parse', '--show-toplevel').strip())
 
 def GetRepositoryRoot():
-    cp = subprocess.run(('git', 'rev-parse', '--git-dir'), stdout=subprocess.PIPE)
-    if cp.returncode != 0: sys.exit(1)
-    return os.path.abspath(codecs.decode(cp.stdout, sys.stdout.encoding).strip())
+    return os.path.abspath(ReadGitOutput('rev-parse', '--git-dir').strip())
 
 def ReadGitmodules(worktreeRoot):
     # Read the .gitmodules file
@@ -92,7 +92,8 @@ def ReadGitmodules(worktreeRoot):
             if 'path' in contents:
                 gitmodules.byPath[contents['path']] = contents
             if 'sparse-checkout' in contents:
-                # Split and convert to list
+                # Split by either commas or whitespace, and convert to list
+                # TODO: support quoted paths with embedded spaces etc?
                 contents['sparse-checkout'] = re.split(r'[\s,]+', contents['sparse-checkout'])
     return gitmodules
 
@@ -108,21 +109,68 @@ if args.verbose:
 # Process commands
 
 if args.dryRun:
-    args.verbose = True
     print("DRY RUN:")
 
 if args.command == 'add':
     # TODO: do underlying git submodule add without cloning?
     # TODO: clone as partial, setup worktree
-    sys.exit("Not yet implemented")
+    print("Not yet implemented")
 
 elif args.command == 'clone':
     # Load .gitmodules information
     gitmodules = ReadGitmodules(worktreeRoot)
 
     # Init the submodules - this ensures git config "submodule.foo" options are set up
-    Git('submodule', 'init', *args.path)
+    Git('submodule', 'init', *args.paths)
 
-    # TODO: loop over paths and clone as partial if not already cloned,
-    # setup worktree as sparse if not already
-    sys.exit("Not yet implemented")
+    if args.paths:
+        # Make passed-in submodule paths relative to the worktree root
+        submoduleRelPathsToProcess = [os.path.relpath(
+                                            os.path.abspath(path),
+                                            worktreeRoot)
+                                        .replace('\\', '/')     # Git always uses forward slashes
+                                        for path in args.paths]
+    else:
+        submoduleRelPathsToProcess = gitmodules.byPath.keys()
+
+    for submoduleRelPath in submoduleRelPathsToProcess:
+        if submoduleRelPath not in gitmodules.byPath:
+            sys.stderr.write("Couldn't find %s in .gitmodules! Skipping.\n" % submoduleRelPath)
+            continue
+        submodule = gitmodules.byPath[submoduleRelPath]
+
+        # Find the submodule's repo directory under the superproject's .git/modules/
+        submoduleRepoRoot = os.path.join(repoRoot, 'modules', submodule['name'])
+        if os.path.isdir(submoduleRepoRoot) and any(os.scandir(submoduleRepoRoot)):
+            if args.verbose:
+                print("%s submodule repo is nonempty; skipping" % submoduleRelPath)
+            continue
+        os.makedirs(os.path.join(repoRoot, 'modules'), exist_ok=True)
+
+        # Find the submodule's worktree directory
+        submoduleWorktreeRoot = os.path.join(worktreeRoot, submoduleRelPath)
+        if os.path.isdir(submoduleWorktreeRoot) and any(os.scandir(submoduleWorktreeRoot)):
+            sys.stderr.write("%s submodule worktree is nonempty! Skipping.\n" % submoduleRelPath)
+            continue
+        os.makedirs(submoduleWorktreeRoot, exist_ok=True)   # Should already exist, but just make sure
+
+        # Perform the partial clone!!!
+        Git('clone',
+            '--filter=blob:none',
+            '--no-checkout',
+            '--sparse',
+            '--separate-git-dir', submoduleRepoRoot,
+            *gitPassthroughArgs,
+            submodule['url'],
+            submoduleWorktreeRoot)
+
+        # Retrieve the commit sha1 that the submodule is supposed to be at
+        treeInfo = ReadGitOutput('-C', worktreeRoot, 'ls-tree', 'HEAD', submoduleRelPath).split()
+        if len(treeInfo) != 4:
+            sys.exit("git ls-tree produced unexpected output:\n%s" % ' '.join(treeInfo))
+        submoduleCommit = treeInfo[2]
+        if args.verbose:
+            print("%s submodule sha1 is %s" % (submoduleRelPath, submoduleCommit))
+
+        # TODO: Checkout
+        print("Not yet implemented")
