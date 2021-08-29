@@ -11,8 +11,8 @@ import argparse, codecs, configparser, os, re, subprocess
 # Parse arguments
 
 parser = argparse.ArgumentParser(description="Add or clone partial git submodules.")
-parser.add_argument('-n', dest='dryRun', default=False, action='store_true', help='Dry run (display git commands without executing them)')
-parser.add_argument('-v', dest='verbose', default=False, action='store_true', help='Verbose (display git commands being run, and other info)')
+parser.add_argument('-n', '--dry-run', dest='dryRun', default=False, action='store_true', help='Dry run (display git commands without executing them)')
+parser.add_argument('-v', '--verbose', dest='verbose', default=False, action='store_true', help='Verbose (display git commands being run, and other info)')
 subparsers = parser.add_subparsers(dest='command', metavar='command')
 
 addCmdParser = subparsers.add_parser(
@@ -91,10 +91,6 @@ def ReadGitmodules(worktreeRoot):
             gitmodules.byName[name] = contents
             if 'path' in contents:
                 gitmodules.byPath[contents['path']] = contents
-            if 'sparse-checkout' in contents:
-                # Split by either commas or whitespace, and convert to list
-                # TODO: support quoted paths with embedded spaces etc?
-                contents['sparse-checkout'] = re.split(r'[\s,]+', contents['sparse-checkout'])
     return gitmodules
 
 # Version 2.27.0 is needed for --filter and --sparse options on git clone
@@ -125,17 +121,17 @@ elif args.command == 'clone':
 
     if args.paths:
         # Make passed-in submodule paths relative to the worktree root
-        submoduleRelPathsToProcess = [os.path.relpath(
-                                            os.path.abspath(path),
-                                            worktreeRoot)
+        submoduleRelPathsToProcess = [os.path.relpath(os.path.abspath(path), worktreeRoot)
                                         .replace('\\', '/')     # Git always uses forward slashes
                                         for path in args.paths]
     else:
         submoduleRelPathsToProcess = gitmodules.byPath.keys()
 
+    submodulesSkipped = 0
     for submoduleRelPath in submoduleRelPathsToProcess:
         if submoduleRelPath not in gitmodules.byPath:
             sys.stderr.write("Couldn't find %s in .gitmodules! Skipping.\n" % submoduleRelPath)
+            submodulesSkipped += 1
             continue
         submodule = gitmodules.byPath[submoduleRelPath]
 
@@ -144,25 +140,37 @@ elif args.command == 'clone':
         if os.path.isdir(submoduleRepoRoot) and any(os.scandir(submoduleRepoRoot)):
             if args.verbose:
                 print("%s submodule repo is nonempty; skipping" % submoduleRelPath)
+            submodulesSkipped += 1
             continue
-        os.makedirs(os.path.join(repoRoot, 'modules'), exist_ok=True)
 
         # Find the submodule's worktree directory
-        submoduleWorktreeRoot = os.path.join(worktreeRoot, submoduleRelPath)
+        submoduleWorktreeRoot = os.path.join(worktreeRoot, os.path.normpath(submoduleRelPath))
         if os.path.isdir(submoduleWorktreeRoot) and any(os.scandir(submoduleWorktreeRoot)):
             sys.stderr.write("%s submodule worktree is nonempty! Skipping.\n" % submoduleRelPath)
+            submodulesSkipped += 1
             continue
-        os.makedirs(submoduleWorktreeRoot, exist_ok=True)   # Should already exist, but just make sure
+
+        # Create directories if necessary
+        if not args.dryRun:
+            os.makedirs(os.path.dirname(submoduleRepoRoot), exist_ok=True)
+            os.makedirs(submoduleWorktreeRoot, exist_ok=True)   # Should have been created by 'git submodule init', but just make sure
 
         # Perform the partial clone!!!
         Git('clone',
             '--filter=blob:none',
             '--no-checkout',
-            '--sparse',
             '--separate-git-dir', submoduleRepoRoot,
             *gitPassthroughArgs,
             submodule['url'],
             submoduleWorktreeRoot)
+
+        # Apply sparse-checkout patterns in the submodule worktree
+        # TODO: support "cone" mode?
+        if sparseCheckoutPatterns := submodule.get('sparse-checkout'):
+            Git('-C', submoduleWorktreeRoot, 'sparse-checkout', 'init')
+            # Split patterns by whitespace - TODO: support quoted paths with embedded spaces etc?
+            Git('-C', submoduleWorktreeRoot, 'sparse-checkout', 'set', *sparseCheckoutPatterns.split())
+            print("Applied sparse-checkout patterns: %s" % sparseCheckoutPatterns)
 
         # Retrieve the commit sha1 that the submodule is supposed to be at
         treeInfo = ReadGitOutput('-C', worktreeRoot, 'ls-tree', 'HEAD', submoduleRelPath).split()
@@ -172,5 +180,15 @@ elif args.command == 'clone':
         if args.verbose:
             print("%s submodule sha1 is %s" % (submoduleRelPath, submoduleCommit))
 
-        # TODO: Checkout
-        print("Not yet implemented")
+        # Checkout the submodule
+        Git('-C', submoduleWorktreeRoot, 'checkout', '--detach', submoduleCommit)
+
+        # Set core.worktree config on the submodule, as for some reason neither the clone nor the checkout does so
+        # TODO: normal submodule checkouts in the primary worktree set this to a relative path,
+        # but we're always setting an absolute path. Does it matter?
+        Git('-C', submoduleWorktreeRoot, 'config', 'core.worktree',
+            submoduleWorktreeRoot.replace('\\', '/'))       # Git always uses forward slashes
+
+    print("Cloned %d submodules and skipped %d." %
+            (len(submoduleRelPathsToProcess) - submodulesSkipped,
+             submodulesSkipped))
