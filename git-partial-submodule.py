@@ -136,7 +136,7 @@ elif args.command == 'clone':
         submodule = gitmodules.byPath[submoduleRelPath]
 
         # Find the submodule's repo directory under the superproject's .git/modules/
-        submoduleRepoRoot = os.path.join(repoRoot, 'modules', submodule['name'])
+        submoduleRepoRoot = os.path.join(repoRoot, 'modules', os.path.normpath(submodule['name']))
         if os.path.isdir(submoduleRepoRoot) and any(os.scandir(submoduleRepoRoot)):
             if args.verbose:
                 print("%s submodule repo is nonempty; skipping" % submoduleRelPath)
@@ -160,6 +160,7 @@ elif args.command == 'clone':
             '--filter=blob:none',
             '--no-checkout',
             '--separate-git-dir', submoduleRepoRoot,
+            *(['--branch', branchName] if (branchName := submodule.get('branch')) else []),
             *gitPassthroughArgs,
             submodule['url'],
             submoduleWorktreeRoot)
@@ -181,7 +182,17 @@ elif args.command == 'clone':
             print("%s submodule sha1 is %s" % (submoduleRelPath, submoduleCommit))
 
         # Checkout the submodule
-        Git('-C', submoduleWorktreeRoot, 'checkout', '--detach', submoduleCommit)
+        checkoutArgs = ['--detach', submoduleCommit]
+        if (branchName := submodule.get('branch')) and not args.dryRun:
+            # Retrieve the commit sha1 of the current branch head
+            branchHeadCommit = ReadGitOutput('-C', submoduleWorktreeRoot, 'rev-parse', branchName).strip()
+            if args.verbose:
+                print("%s branch %s is at sha1 %s" % (submoduleRelPath, branchName, branchHeadCommit))
+            # Checkout the branch head directly if it matches the submodule pointer,
+            # rather than putting the submodule in a detached head state.
+            if branchHeadCommit == submoduleCommit:
+                checkoutArgs = [branchName]
+        Git('-C', submoduleWorktreeRoot, 'checkout', *checkoutArgs)
 
         # Set core.worktree config on the submodule, as for some reason neither the clone nor the checkout does so
         # TODO: normal submodule checkouts in the primary worktree set this to a relative path,
