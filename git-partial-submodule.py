@@ -18,21 +18,22 @@ subparsers = parser.add_subparsers(dest='command', metavar='command')
 addCmdParser = subparsers.add_parser(
     'add',
     allow_abbrev = False,
-    help = "Add a new partial submodule.",
-    epilog = "All other options are passed through to the underlying git command.")
-addCmdParser.add_argument('-b', dest='branch', help='Branch in the submodule repository to check out')
+    help = "Add a new partial submodule.")
+addCmdParser.add_argument('-b', '--branch', dest='branch', help='Branch in the submodule repository to check out')
 addCmdParser.add_argument('--name', dest='name', help='Logical name for the submodule')
+addCmdParser.add_argument('--sparse', dest='sparse', default=False, action='store_true', help='Enable sparse checkout in the submodule')
 addCmdParser.add_argument('repository', help='URL to the git repository to be added as a submodule')
 addCmdParser.add_argument('path', help='Directory where the submodule will be checked out')
 
 cloneCmdParser = subparsers.add_parser(
     'clone',
     allow_abbrev = False,
-    help = "Clone partial submodules from .gitmodules.",
-    epilog = "All other options are passed through to the underlying git command.")
+    help = "Clone partial submodules from .gitmodules.")
 cloneCmdParser.add_argument('paths', nargs='*', default=[], help='Submodule directory(ies) to clone (if unspecified, all submodules)')
 
-args, gitPassthroughArgs = parser.parse_known_args()
+# TODO: command to save sparse-checkout patterns from submodules to .gitmodules
+
+args = parser.parse_args()
 
 if args.command is None:
     parser.print_help()
@@ -161,7 +162,6 @@ elif args.command == 'clone':
             '--no-checkout',
             '--separate-git-dir', submoduleRepoRoot,
             *(['--branch', branchName] if (branchName := submodule.get('branch')) else []),
-            *gitPassthroughArgs,
             submodule['url'],
             submoduleWorktreeRoot)
 
