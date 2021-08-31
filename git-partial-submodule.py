@@ -126,6 +126,11 @@ if args.command == 'add':
     if os.path.isdir(submoduleWorktreeRoot) and any(os.scandir(submoduleWorktreeRoot)):
         sys.exit("%s submodule worktree is nonempty!" % args.path)
 
+    # Make sure the submodule worktree-to-be is empty in the index as well
+    # (otherwise the final git submodule add will fail)
+    if ReadGitOutput('-C', worktreeRoot, 'ls-files', '--cached', submoduleRelPath).strip():
+        sys.exit("%s submodule worktree is nonempty in the index!\nYou might need to `git rm` that directory first." % args.path)
+
     # Create directories if necessary
     if not args.dryRun:
         os.makedirs(os.path.dirname(submoduleRepoRoot), exist_ok=True)
