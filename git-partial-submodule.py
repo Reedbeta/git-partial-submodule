@@ -109,9 +109,54 @@ if args.dryRun:
     print("DRY RUN:")
 
 if args.command == 'add':
-    # TODO: do underlying git submodule add without cloning?
-    # TODO: clone as partial, setup worktree
-    print("Not yet implemented")
+    # Make passed-in submodule path relative to the worktree root
+    submoduleRelPath = (os.path.relpath(os.path.abspath(args.path), worktreeRoot)
+                            .replace('\\', '/'))    # Git always uses forward slashes
+
+    # Determine submodule name from the relative path if name is not provided
+    submoduleName = args.name or submoduleRelPath
+
+    # Find the submodule's repo directory under the superproject's .git/modules/
+    submoduleRepoRoot = os.path.join(repoRoot, 'modules', os.path.normpath(submoduleName))
+    if os.path.isdir(submoduleRepoRoot):
+        sys.exit("submodule %s repo already exists!" % submoduleName)
+
+    # Find the submodule's worktree directory
+    submoduleWorktreeRoot = os.path.join(worktreeRoot, os.path.normpath(submoduleRelPath))
+    if os.path.isdir(submoduleWorktreeRoot) and any(os.scandir(submoduleWorktreeRoot)):
+        sys.exit("%s submodule worktree is nonempty!" % args.path)
+
+    # Create directories if necessary
+    if not args.dryRun:
+        os.makedirs(os.path.dirname(submoduleRepoRoot), exist_ok=True)
+        os.makedirs(submoduleWorktreeRoot, exist_ok=True)   # Should have been created by 'git submodule init', but just make sure
+
+    # Perform the partial clone!!!
+    Git('clone',
+        '--filter=blob:none',
+        '--no-checkout',
+        '--separate-git-dir', submoduleRepoRoot,
+        *(['--branch', args.branch] if args.branch else []),
+        *(['--sparse'] if args.sparse else []),
+        args.repository,
+        submoduleWorktreeRoot)
+
+    # Checkout the submodule
+    Git('-C', submoduleWorktreeRoot, 'checkout', *([args.branch] if args.branch else []))
+
+    # Set core.worktree config on the submodule, as for some reason neither the clone nor the checkout does so
+    # TODO: normal submodule checkouts in the primary worktree set this to a relative path,
+    # but we're always setting an absolute path. Does it matter?
+    Git('-C', submoduleWorktreeRoot, 'config', 'core.worktree',
+        submoduleWorktreeRoot.replace('\\', '/'))       # Git always uses forward slashes
+
+    # Do the submodule add, which will pick up the now existing repository
+    Git('-C', worktreeRoot,
+        'submodule', 'add',
+        *(['-b', args.branch] if args.branch else []),
+        *(['--name', args.name] if args.name else []),
+        args.repository,
+        submoduleRelPath)
 
 elif args.command == 'clone':
     # Load .gitmodules information
@@ -140,7 +185,7 @@ elif args.command == 'clone':
         submoduleRepoRoot = os.path.join(repoRoot, 'modules', os.path.normpath(submodule['name']))
         if os.path.isdir(submoduleRepoRoot) and any(os.scandir(submoduleRepoRoot)):
             if args.verbose:
-                print("%s submodule repo is nonempty; skipping" % submoduleRelPath)
+                print("submodule %s repo already exists; skipping" % submodule['name'])
             submodulesSkipped += 1
             continue
 
