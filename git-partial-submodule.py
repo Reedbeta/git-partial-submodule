@@ -17,7 +17,6 @@ subparsers = parser.add_subparsers(dest='command', metavar='command')
 
 addCmdParser = subparsers.add_parser(
     'add',
-    allow_abbrev = False,
     help = "Add a new partial submodule.")
 addCmdParser.add_argument('-b', '--branch', dest='branch', help='Branch in the submodule repository to check out')
 addCmdParser.add_argument('--name', dest='name', help='Logical name for the submodule')
@@ -27,11 +26,18 @@ addCmdParser.add_argument('path', help='Directory where the submodule will be ch
 
 cloneCmdParser = subparsers.add_parser(
     'clone',
-    allow_abbrev = False,
     help = "Clone partial submodules from .gitmodules.")
-cloneCmdParser.add_argument('paths', nargs='*', default=[], help='Submodule directory(ies) to clone (if unspecified, all submodules)')
+cloneCmdParser.add_argument('paths', nargs='*', default=[], help='Submodule path(s) to clone (if unspecified, all submodules)')
 
-# TODO: command to save sparse-checkout patterns from submodules to .gitmodules
+saveSparsePatternsCmdParser = subparsers.add_parser(
+    'save-sparse-patterns',
+    help = "Save sparse-checkout patterns to .gitmodules.")
+saveSparsePatternsCmdParser.add_argument('paths', nargs='*', default=[], help='Submodule path(s) to save (if unspecified, all submodules)')
+
+reapplySparsePatternsCmdParser = subparsers.add_parser(
+    'reapply-sparse-patterns',
+    help = "Re-apply sparse-checkout patterns from .gitmodules.")
+reapplySparsePatternsCmdParser.add_argument('paths', nargs='*', default=[], help='Submodule path(s) to reapply (if unspecified, all submodules)')
 
 args = parser.parse_args()
 
@@ -41,21 +47,21 @@ if args.command is None:
 
 # Helper functions
 
-def Git(*gitArgs):
+def Git(*gitArgs, okReturnCodes = [0]):
     if args.verbose or args.dryRun:
         print('git ' + ' '.join(gitArgs))
     if args.dryRun:
         return
     cp = subprocess.run(('git',) + gitArgs)
-    if cp.returncode != 0:
+    if cp.returncode not in okReturnCodes:
         sys.exit("Git command failed: git %s" % ' '.join(gitArgs))
     return cp
 
-def ReadGitOutput(*gitArgs):
+def ReadGitOutput(*gitArgs, okReturnCodes = [0]):
     # Not respecting verbose or dryRun here since this is just used for querying things, not modifying anything
     cp = subprocess.run(('git',) + gitArgs, stdout=subprocess.PIPE)
-    if cp.returncode != 0:
-        sys.exit(1)     # Git will have already printed an error to stderr
+    if cp.returncode not in okReturnCodes:
+        sys.exit("Git command failed: git %s" % ' '.join(gitArgs))
     return codecs.decode(cp.stdout, sys.stdout.encoding)
 
 def CheckGitVersion(minVersion):
@@ -63,12 +69,6 @@ def CheckGitVersion(minVersion):
         gitVersion = tuple(int(m.group(i)) for i in range(1, 4))
     if gitVersion < minVersion:
         sys.exit("Git version is too old. You need at least %d.%d.%d, and you have %d.%d.%d." % (minVersion + gitVersion))
-
-def GetWorktreeRoot():
-    return os.path.abspath(ReadGitOutput('rev-parse', '--show-toplevel').strip())
-
-def GetRepositoryRoot():
-    return os.path.abspath(ReadGitOutput('rev-parse', '--git-dir').strip())
 
 def ReadGitmodules(worktreeRoot):
     # Read the .gitmodules file
@@ -98,8 +98,8 @@ def ReadGitmodules(worktreeRoot):
 CheckGitVersion((2, 27, 0))
 
 # Locate directories
-worktreeRoot = GetWorktreeRoot()
-repoRoot = GetRepositoryRoot()
+worktreeRoot = os.path.abspath(ReadGitOutput('rev-parse', '--show-toplevel').strip())
+repoRoot = os.path.abspath(ReadGitOutput('rev-parse', '--git-dir').strip())
 if args.verbose:
     print("worktree root: %s\nrepo root: %s" % (worktreeRoot, repoRoot))
 
@@ -229,7 +229,7 @@ elif args.command == 'clone':
             sys.exit("git ls-tree produced unexpected output:\n%s" % ' '.join(treeInfo))
         submoduleCommit = treeInfo[2]
         if args.verbose:
-            print("%s submodule sha1 is %s" % (submoduleRelPath, submoduleCommit))
+            print("%s submodule sha1 is %s" % (submodule['name'], submoduleCommit))
 
         # Checkout the submodule
         checkoutArgs = ['--detach', submoduleCommit]
@@ -253,3 +253,52 @@ elif args.command == 'clone':
     print("Cloned %d submodules and skipped %d." %
             (len(submoduleRelPathsToProcess) - submodulesSkipped,
              submodulesSkipped))
+
+elif args.command == 'save-sparse-patterns':
+    # Load .gitmodules information
+    gitmodules = ReadGitmodules(worktreeRoot)
+
+    if args.paths:
+        # Make passed-in submodule paths relative to the worktree root
+        submoduleRelPathsToProcess = [os.path.relpath(os.path.abspath(path), worktreeRoot)
+                                        .replace('\\', '/')     # Git always uses forward slashes
+                                        for path in args.paths]
+    else:
+        submoduleRelPathsToProcess = gitmodules.byPath.keys()
+
+    for submoduleRelPath in submoduleRelPathsToProcess:
+        if submoduleRelPath not in gitmodules.byPath:
+            sys.stderr.write("Couldn't find %s in .gitmodules! Skipping.\n" % submoduleRelPath)
+            continue
+        submodule = gitmodules.byPath[submoduleRelPath]
+
+        # Find the submodule's worktree directory
+        submoduleWorktreeRoot = os.path.join(worktreeRoot, os.path.normpath(submoduleRelPath))
+        if not os.path.isdir(submoduleWorktreeRoot) or not any(os.scandir(submoduleWorktreeRoot)):
+            sys.stderr.write("%s submodule worktree is empty! Skipping.\n" % submoduleRelPath)
+            continue
+
+        # Determine if the submodule has sparse-checkout enabled
+        if ReadGitOutput('-C', submoduleWorktreeRoot, 'config', 'core.sparseCheckout',
+                            okReturnCodes=[0, 1]).strip() == 'true':    # code 1 = missing key, which means false here
+            # Retrieve the sparse-checkout patterns
+            sparsePatterns = ReadGitOutput('-C', submoduleWorktreeRoot, 'sparse-checkout', 'list').strip()
+
+            # Save to the .gitmodules file
+            Git('-C', worktreeRoot, 'config', '-f', '.gitmodules',
+                'submodule.%s.sparse-checkout' % submodule['name'],
+                sparsePatterns.replace('\n', ' '))
+
+        else:   # sparse-checkout not enabled
+            # Unset it in the .gitmodules file
+            Git('-C', worktreeRoot, 'config', '-f', '.gitmodules',
+                '--unset', 'submodule.%s.sparse-checkout' % submodule['name'],
+                okReturnCodes=[0, 5])   # code 5 = "you try to unset an option which does not exist"
+
+        print("Saved sparse patterns for %s." % submodule['name'])
+
+elif args.command == 'reapply-sparse-patterns':
+    # Load .gitmodules information
+    gitmodules = ReadGitmodules(worktreeRoot)
+
+    sys.exit("Not yet implemented")
