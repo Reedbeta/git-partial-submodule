@@ -283,22 +283,51 @@ elif args.command == 'save-sparse-patterns':
                             okReturnCodes=[0, 1]).strip() == 'true':    # code 1 = missing key, which means false here
             # Retrieve the sparse-checkout patterns
             sparsePatterns = ReadGitOutput('-C', submoduleWorktreeRoot, 'sparse-checkout', 'list').strip()
-
             # Save to the .gitmodules file
             Git('-C', worktreeRoot, 'config', '-f', '.gitmodules',
                 'submodule.%s.sparse-checkout' % submodule['name'],
                 sparsePatterns.replace('\n', ' '))
+            print("Saved sparse-checkout patterns for %s." % submodule['name'])
 
         else:   # sparse-checkout not enabled
             # Unset it in the .gitmodules file
             Git('-C', worktreeRoot, 'config', '-f', '.gitmodules',
                 '--unset', 'submodule.%s.sparse-checkout' % submodule['name'],
                 okReturnCodes=[0, 5])   # code 5 = "you try to unset an option which does not exist"
-
-        print("Saved sparse patterns for %s." % submodule['name'])
+            print("Sparse checkout not enabled for %s." % submodule['name'])
 
 elif args.command == 'reapply-sparse-patterns':
     # Load .gitmodules information
     gitmodules = ReadGitmodules(worktreeRoot)
 
-    sys.exit("Not yet implemented")
+    if args.paths:
+        # Make passed-in submodule paths relative to the worktree root
+        submoduleRelPathsToProcess = [os.path.relpath(os.path.abspath(path), worktreeRoot)
+                                        .replace('\\', '/')     # Git always uses forward slashes
+                                        for path in args.paths]
+    else:
+        submoduleRelPathsToProcess = gitmodules.byPath.keys()
+
+    for submoduleRelPath in submoduleRelPathsToProcess:
+        if submoduleRelPath not in gitmodules.byPath:
+            sys.stderr.write("Couldn't find %s in .gitmodules! Skipping.\n" % submoduleRelPath)
+            continue
+        submodule = gitmodules.byPath[submoduleRelPath]
+
+        # Find the submodule's worktree directory
+        submoduleWorktreeRoot = os.path.join(worktreeRoot, os.path.normpath(submoduleRelPath))
+        if not os.path.isdir(submoduleWorktreeRoot) or not any(os.scandir(submoduleWorktreeRoot)):
+            sys.stderr.write("%s submodule worktree is empty! Skipping.\n" % submoduleRelPath)
+            continue
+
+        # Determine if the submodule should have sparse-checkout enabled
+        # TODO: support "cone" mode?
+        if sparseCheckoutPatterns := submodule.get('sparse-checkout'):
+            Git('-C', submoduleWorktreeRoot, 'sparse-checkout', 'init')
+            # Split patterns by whitespace - TODO: support quoted paths with embedded spaces etc?
+            Git('-C', submoduleWorktreeRoot, 'sparse-checkout', 'set', *sparseCheckoutPatterns.split())
+            print("Applied sparse-checkout patterns for %s." % submodule['name'])
+
+        else:   # sparse-checkout not enabled
+            Git('-C', submoduleWorktreeRoot, 'sparse-checkout', 'disable')
+            print("Sparse checkout disabled for %s." % submodule['name'])
