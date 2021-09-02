@@ -15,6 +15,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# For more information, see https://github.com/Reedbeta/git-partial-submodule
+
 # Check Python version
 import sys
 if sys.hexversion < 0x03080000:
@@ -24,7 +26,7 @@ import argparse, codecs, configparser, os, re, subprocess
 
 # Parse arguments
 
-parser = argparse.ArgumentParser(description="Add or clone partial git submodules.")
+parser = argparse.ArgumentParser(description="Add or clone partial git submodules; save and restore sparse-checkout patterns.")
 parser.add_argument('-n', '--dry-run', dest='dryRun', default=False, action='store_true', help='Dry run (display git commands without executing them)')
 parser.add_argument('-v', '--verbose', dest='verbose', default=False, action='store_true', help='Verbose (display git commands being run, and other info)')
 subparsers = parser.add_subparsers(dest='command', metavar='command')
@@ -43,15 +45,15 @@ cloneCmdParser = subparsers.add_parser(
     help = "Clone partial submodules from .gitmodules.")
 cloneCmdParser.add_argument('paths', nargs='*', default=[], help='Submodule path(s) to clone (if unspecified, all submodules)')
 
-saveSparsePatternsCmdParser = subparsers.add_parser(
-    'save-sparse-patterns',
+saveSparseCmdParser = subparsers.add_parser(
+    'save-sparse',
     help = "Save sparse-checkout patterns to .gitmodules.")
-saveSparsePatternsCmdParser.add_argument('paths', nargs='*', default=[], help='Submodule path(s) to save (if unspecified, all submodules)')
+saveSparseCmdParser.add_argument('paths', nargs='*', default=[], help='Submodule path(s) to save (if unspecified, all submodules)')
 
-reapplySparsePatternsCmdParser = subparsers.add_parser(
-    'reapply-sparse-patterns',
-    help = "Re-apply sparse-checkout patterns from .gitmodules.")
-reapplySparsePatternsCmdParser.add_argument('paths', nargs='*', default=[], help='Submodule path(s) to reapply (if unspecified, all submodules)')
+restoreSparseCmdParser = subparsers.add_parser(
+    'restore-sparse',
+    help = "Restore sparse-checkout patterns from .gitmodules.")
+restoreSparseCmdParser.add_argument('paths', nargs='*', default=[], help='Submodule path(s) to restore (if unspecified, all submodules)')
 
 args = parser.parse_args()
 
@@ -268,7 +270,7 @@ elif args.command == 'clone':
             (len(submoduleRelPathsToProcess) - submodulesSkipped,
              submodulesSkipped))
 
-elif args.command == 'save-sparse-patterns':
+elif args.command == 'save-sparse':
     # Load .gitmodules information
     gitmodules = ReadGitmodules(worktreeRoot)
 
@@ -310,7 +312,7 @@ elif args.command == 'save-sparse-patterns':
                 okReturnCodes=[0, 5])   # code 5 = "you try to unset an option which does not exist"
             print("Sparse checkout not enabled for %s." % submodule['name'])
 
-elif args.command == 'reapply-sparse-patterns':
+elif args.command == 'restore-sparse':
     # Load .gitmodules information
     gitmodules = ReadGitmodules(worktreeRoot)
 
