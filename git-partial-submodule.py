@@ -44,6 +44,7 @@ cloneCmdParser = subparsers.add_parser(
     'clone',
     help = "Clone partial submodules from .gitmodules.")
 cloneCmdParser.add_argument('paths', nargs='*', default=[], help='Submodule path(s) to clone (if unspecified, all submodules)')
+# TODO: recursive clone option
 
 saveSparseCmdParser = subparsers.add_parser(
     'save-sparse',
@@ -179,6 +180,8 @@ if args.command == 'add':
         args.repository,
         submoduleRelPath)
 
+    # TODO: if sparse, save the initial set of sparse patterns to .gitmodules
+
 elif args.command == 'clone':
     # Load .gitmodules information
     gitmodules = ReadGitmodules(worktreeRoot)
@@ -193,6 +196,8 @@ elif args.command == 'clone':
                                         for path in args.paths]
     else:
         submoduleRelPathsToProcess = gitmodules.byPath.keys()
+
+    # TODO: filter by active submodules
 
     submodulesSkipped = 0
     for submoduleRelPath in submoduleRelPathsToProcess:

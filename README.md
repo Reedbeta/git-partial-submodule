@@ -70,7 +70,7 @@ so it might fail or do the wrong thing in some edge cases I haven't considered (
 repo in a bad state afterward).
 
 Not all of the various command-line options to the underlying `git clone`, `git submodule add`, etc.
-are supported.
+are supported. In particular, recursive clone is not currently supported.
 
 "Cone" mode for sparse checkout is not currently supported.
 
