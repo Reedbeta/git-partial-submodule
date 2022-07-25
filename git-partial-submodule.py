@@ -111,6 +111,11 @@ def ReadGitmodules(worktreeRoot):
                 gitmodules.byPath[contents['path']] = contents
     return gitmodules
 
+def ResolveBranch(branchName):
+    if branchName == '.':
+       return repoBranch
+    return branchName
+
 # Version 2.27.0 is needed for --filter and --sparse options on git clone
 CheckGitVersion((2, 27, 0))
 
@@ -118,8 +123,9 @@ CheckGitVersion((2, 27, 0))
 worktreeRoot = os.path.abspath(ReadGitOutput('rev-parse', '--show-toplevel').strip())
 repoRoot = os.path.abspath(ReadGitOutput('rev-parse', '--git-dir').strip())
 repoUrl = ReadGitOutput('config', '--get', 'remote.origin.url').strip()
+repoBranch = ReadGitOutput('rev-parse', '--abbrev-ref', 'HEAD').strip()
 if args.verbose:
-    print("worktree root: %s\nrepo root: %s\nrepo url: %s" % (worktreeRoot, repoRoot, repoUrl))
+    print("worktree root: %s\nrepo root: %s\nrepo url: %s\nrepo branch: %s" % (worktreeRoot, repoRoot, repoUrl, repoBranch))
 
 # Process commands
 
@@ -247,7 +253,7 @@ elif args.command == 'clone':
             '--filter=blob:none',
             '--no-checkout',
             '--separate-git-dir', submoduleRepoRoot,
-            *(['--branch', branchName] if (branchName := submodule.get('branch')) else []),
+            *(['--branch', ResolveBranch(branchName)] if (branchName := submodule.get('branch')) else []),
             subUrl,
             submoduleWorktreeRoot)
 
