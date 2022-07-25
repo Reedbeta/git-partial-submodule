@@ -117,8 +117,9 @@ CheckGitVersion((2, 27, 0))
 # Locate directories
 worktreeRoot = os.path.abspath(ReadGitOutput('rev-parse', '--show-toplevel').strip())
 repoRoot = os.path.abspath(ReadGitOutput('rev-parse', '--git-dir').strip())
+repoUrl = ReadGitOutput('config', '--get', 'remote.origin.url').strip()
 if args.verbose:
-    print("worktree root: %s\nrepo root: %s" % (worktreeRoot, repoRoot))
+    print("worktree root: %s\nrepo root: %s\nrepo url: %s" % (worktreeRoot, repoRoot, repoUrl))
 
 # Process commands
 
@@ -227,13 +228,27 @@ elif args.command == 'clone':
             os.makedirs(os.path.dirname(submoduleRepoRoot), exist_ok=True)
             os.makedirs(submoduleWorktreeRoot, exist_ok=True)   # Should have been created by 'git submodule init', but just make sure
 
+        # Resolve relative submodule url
+        join = False
+        subUrl = submodule['url']
+        baseUrl = repoUrl
+        while subUrl.startswith('./') or subUrl.startswith('../'):
+           join = True
+           if subUrl.startswith('./'):
+              subUrl = subUrl[2:]
+           else:
+              subUrl = subUrl[3:]
+              baseUrl = os.path.split(baseUrl)[0]
+        if join:
+           subUrl = baseUrl+'/'+subUrl
+
         # Perform the partial clone!!!
         Git('clone',
             '--filter=blob:none',
             '--no-checkout',
             '--separate-git-dir', submoduleRepoRoot,
             *(['--branch', branchName] if (branchName := submodule.get('branch')) else []),
-            submodule['url'],
+            subUrl,
             submoduleWorktreeRoot)
 
         # Apply sparse-checkout patterns in the submodule worktree
